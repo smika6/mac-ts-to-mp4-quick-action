@@ -24,8 +24,8 @@ This repo packages that as a one-click Finder Quick Action so you don't have to 
 ## Install
 
 ```sh
-git clone https://github.com/smika6/ts-to-mp4-quick-action.git
-cd ts-to-mp4-quick-action
+git clone https://github.com/smika6/mac-ts-to-mp4-quick-action.git
+cd mac-ts-to-mp4-quick-action
 ./install.sh
 ```
 
