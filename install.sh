@@ -1,13 +1,10 @@
 #!/bin/zsh
-# Installer for the "Convert TS to MP4" Quick Action.
-# Builds the .workflow bundle in ~/Library/Services and verifies prerequisites.
+# Installer for the "Convert TS to MP4" and "Convert TS to MKV" Quick Actions.
+# Builds both .workflow bundles in ~/Library/Services and verifies prerequisites.
 
 set -euo pipefail
 
-SERVICE_NAME="Convert TS to MP4"
 SERVICES_DIR="${HOME}/Library/Services"
-WORKFLOW_DIR="${SERVICES_DIR}/${SERVICE_NAME}.workflow"
-CONTENTS_DIR="${WORKFLOW_DIR}/Contents"
 
 print_step()  { printf "\033[1;34m==>\033[0m %s\n" "$1"; }
 print_ok()    { printf "\033[1;32m  ✓\033[0m %s\n" "$1"; }
@@ -38,20 +35,24 @@ else
   fi
 fi
 
-# --- 2. Remove any prior install ------------------------------------------
+# --- 2. Build helper -------------------------------------------------------
 
-if [[ -d "$WORKFLOW_DIR" ]]; then
-  print_step "Removing existing ${SERVICE_NAME}.workflow"
-  rm -rf "$WORKFLOW_DIR"
-fi
+# build_workflow <service-name> <shell-script>
+build_workflow() {
+  local service_name="$1"
+  local shell_script="$2"
+  local workflow_dir="${SERVICES_DIR}/${service_name}.workflow"
+  local contents_dir="${workflow_dir}/Contents"
 
-# --- 3. Build the bundle ---------------------------------------------------
+  if [[ -d "$workflow_dir" ]]; then
+    print_step "Removing existing ${service_name}.workflow"
+    rm -rf "$workflow_dir"
+  fi
 
-print_step "Creating workflow bundle"
-mkdir -p "$CONTENTS_DIR"
+  print_step "Creating ${service_name}.workflow"
+  mkdir -p "$contents_dir"
 
-# Info.plist — registers the Quick Action with Finder and limits it to .ts files.
-cat > "${CONTENTS_DIR}/Info.plist" <<PLIST
+  cat > "${contents_dir}/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -62,7 +63,7 @@ cat > "${CONTENTS_DIR}/Info.plist" <<PLIST
             <key>NSMenuItem</key>
             <dict>
                 <key>default</key>
-                <string>${SERVICE_NAME}</string>
+                <string>${service_name}</string>
             </dict>
             <key>NSMessage</key>
             <string>runWorkflowAsService</string>
@@ -82,53 +83,9 @@ cat > "${CONTENTS_DIR}/Info.plist" <<PLIST
 </plist>
 PLIST
 
-# The shell script the Quick Action runs.
-SHELL_SCRIPT=$(cat <<'SCRIPT'
-PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
-
-notify() {
-  /usr/bin/osascript -e "display notification \"$1\" with title \"Convert TS to MP4\""
-}
-
-count_total=0
-count_ok=0
-count_skip=0
-count_fail=0
-
-for f in "$@"; do
-  count_total=$((count_total + 1))
-  case "$f" in
-    *.ts|*.TS) ;;
-    *)
-      count_skip=$((count_skip + 1))
-      continue
-      ;;
-  esac
-
-  out="${f%.*}.mp4"
-  if /usr/bin/env ffmpeg -y -i "$f" -vcodec copy -acodec copy -map 0:v -map 0:a "$out" </dev/null >/dev/null 2>&1; then
-    count_ok=$((count_ok + 1))
-  else
-    count_fail=$((count_fail + 1))
-  fi
-done
-
-if [ "$count_total" -eq 1 ] && [ "$count_ok" -eq 1 ]; then
-  notify "Converted $(basename "$1") → $(basename "${1%.*}").mp4"
-elif [ "$count_ok" -gt 0 ] && [ "$count_fail" -eq 0 ]; then
-  notify "Converted ${count_ok} file(s) successfully"
-elif [ "$count_fail" -gt 0 ]; then
-  notify "Done — ${count_ok} succeeded, ${count_fail} failed"
-elif [ "$count_skip" -eq "$count_total" ]; then
-  notify "No .ts files in selection"
-fi
-SCRIPT
-)
-
-# document.wflow — the Automator workflow definition.
-# Single "Run Shell Script" action that receives selected files as arguments.
-WFLOW_TMP="$(mktemp)"
-cat > "$WFLOW_TMP" <<'WFLOW'
+  local wflow_tmp
+  wflow_tmp="$(mktemp)"
+  cat > "$wflow_tmp" <<'WFLOW'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -266,8 +223,7 @@ cat > "$WFLOW_TMP" <<'WFLOW'
 </plist>
 WFLOW
 
-# Substitute the script using a Python one-liner (handles XML-escaping of the script body).
-/usr/bin/env python3 - "$WFLOW_TMP" "${CONTENTS_DIR}/document.wflow" <<'PY' "$SHELL_SCRIPT"
+  /usr/bin/env python3 - "$wflow_tmp" "${contents_dir}/document.wflow" <<'PY' "$shell_script"
 import sys, html
 src, dst = sys.argv[1], sys.argv[2]
 script = sys.argv[3]
@@ -278,15 +234,109 @@ with open(dst, "w") as f:
     f.write(body)
 PY
 
-rm -f "$WFLOW_TMP"
+  rm -f "$wflow_tmp"
+  print_ok "Bundle written to ${workflow_dir}"
+}
 
-print_ok "Bundle written to ${WORKFLOW_DIR}"
+# --- 3. Shell scripts for each Quick Action --------------------------------
 
-# --- 4. Refresh the Services menu -----------------------------------------
+# MP4 variant. `-tag:v hvc1` makes HEVC streams (e.g. HDZero DVR) play in
+# QuickTime/Finder/iMovie — without it, the stream is muxed as `hev1` and
+# QuickTime renders audio only.
+read -r -d '' MP4_SCRIPT <<'SCRIPT' || true
+PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
+
+notify() {
+  /usr/bin/osascript -e "display notification \"$1\" with title \"Convert TS to MP4\""
+}
+
+count_total=0
+count_ok=0
+count_skip=0
+count_fail=0
+
+for f in "$@"; do
+  count_total=$((count_total + 1))
+  case "$f" in
+    *.ts|*.TS) ;;
+    *)
+      count_skip=$((count_skip + 1))
+      continue
+      ;;
+  esac
+
+  out="${f%.*}.mp4"
+  if /usr/bin/env ffmpeg -y -i "$f" -map 0:v -map 0:a? -c copy -tag:v hvc1 "$out" </dev/null >/dev/null 2>&1; then
+    count_ok=$((count_ok + 1))
+  else
+    count_fail=$((count_fail + 1))
+  fi
+done
+
+if [ "$count_total" -eq 1 ] && [ "$count_ok" -eq 1 ]; then
+  notify "Converted $(basename "$1") → $(basename "${1%.*}").mp4"
+elif [ "$count_ok" -gt 0 ] && [ "$count_fail" -eq 0 ]; then
+  notify "Converted ${count_ok} file(s) successfully"
+elif [ "$count_fail" -gt 0 ]; then
+  notify "Done — ${count_ok} succeeded, ${count_fail} failed"
+elif [ "$count_skip" -eq "$count_total" ]; then
+  notify "No .ts files in selection"
+fi
+SCRIPT
+
+# MKV variant. Matroska accepts any codec, so the remux works on any .ts
+# source without codec tagging. Plays in VLC / IINA (not native QuickTime).
+read -r -d '' MKV_SCRIPT <<'SCRIPT' || true
+PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
+
+notify() {
+  /usr/bin/osascript -e "display notification \"$1\" with title \"Convert TS to MKV\""
+}
+
+count_total=0
+count_ok=0
+count_skip=0
+count_fail=0
+
+for f in "$@"; do
+  count_total=$((count_total + 1))
+  case "$f" in
+    *.ts|*.TS) ;;
+    *)
+      count_skip=$((count_skip + 1))
+      continue
+      ;;
+  esac
+
+  out="${f%.*}.mkv"
+  if /usr/bin/env ffmpeg -y -i "$f" -map 0:v -map 0:a? -c copy "$out" </dev/null >/dev/null 2>&1; then
+    count_ok=$((count_ok + 1))
+  else
+    count_fail=$((count_fail + 1))
+  fi
+done
+
+if [ "$count_total" -eq 1 ] && [ "$count_ok" -eq 1 ]; then
+  notify "Converted $(basename "$1") → $(basename "${1%.*}").mkv"
+elif [ "$count_ok" -gt 0 ] && [ "$count_fail" -eq 0 ]; then
+  notify "Converted ${count_ok} file(s) successfully"
+elif [ "$count_fail" -gt 0 ]; then
+  notify "Done — ${count_ok} succeeded, ${count_fail} failed"
+elif [ "$count_skip" -eq "$count_total" ]; then
+  notify "No .ts files in selection"
+fi
+SCRIPT
+
+# --- 4. Build both bundles -------------------------------------------------
+
+build_workflow "Convert TS to MP4" "$MP4_SCRIPT"
+build_workflow "Convert TS to MKV" "$MKV_SCRIPT"
+
+# --- 5. Refresh the Services menu -----------------------------------------
 
 print_step "Refreshing Finder services"
 /System/Library/CoreServices/pbs -flush >/dev/null 2>&1 || true
 /System/Library/CoreServices/pbs -update >/dev/null 2>&1 || true
 
-print_ok "Done. Right-click a .ts file in Finder → Quick Actions → ${SERVICE_NAME}"
-print_warn "If it doesn't appear immediately, log out and back in (or just relaunch Finder: \`killall Finder\`)."
+print_ok "Done. Right-click a .ts file in Finder → Quick Actions → Convert TS to MP4 / MKV"
+print_warn "If the menu items don't appear immediately, log out and back in (or just relaunch Finder: \`killall Finder\`)."
