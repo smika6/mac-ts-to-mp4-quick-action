@@ -16,10 +16,12 @@ A native macOS notification fires when the conversion finishes. The original `.t
 | | **MP4** | **MKV** |
 |---|---|---|
 | Plays in QuickTime / Finder preview / iMovie | ✅ | ❌ (use VLC / IINA) |
-| Works with any codec inside the `.ts` | ⚠️ H.264 + AAC, or HEVC (auto-tagged `hvc1`) | ✅ Always |
-| Recommended for | Sharing, editing, AirDrop | Anything exotic, or when MP4 fails |
+| Works with any codec inside the `.ts` | ✅ (re-encodes only when needed) | ✅ Always |
+| Plays in QuickTime / Finder / iMovie | ✅ | ❌ (use VLC / IINA) |
+| Speed | Fast for most sources; HDZero clips re-encode (~10× realtime) | Always fast (pure remux) |
+| Recommended for | Sharing, editing, AirDrop | Anything exotic, or when speed matters most |
 
-For HDZero DVR clips (H.264) MP4 works directly. If a source is HEVC, the script auto-applies the `hvc1` codec tag so QuickTime/iMovie still recognize the video. For anything that fails as MP4, use MKV.
+For HDZero DVR clips the script detects the `yuvj420p` pixel format Apple's decoders refuse to render and re-encodes the video to standard `yuv420p` (audio is still copied). For ordinary H.264 or HEVC sources it does a pure remux. HEVC sources additionally get `-tag:v hvc1` so Apple recognizes the codec.
 
 ## Why a remux (not a re-encode)?
 
@@ -60,16 +62,24 @@ Each output lands next to its source: `clip.ts` → `clip.mp4` / `clip.mkv`. Exi
 The Quick Actions are Automator **Run Shell Script** actions. They run, respectively:
 
 ```sh
-# MP4 — for HEVC sources only, the script also passes -tag:v hvc1
-ffmpeg -y -i input.ts -map 0:v -map "0:a?" -c copy [-tag:v hvc1] input.mp4
+# MKV — always a pure remux.
+ffmpeg -y -i input.ts -map 0:v -map "0:a?" -c copy input.mkv
 
-# MKV
-ffmpeg -y -i input.ts -map 0:v -map "0:a?" -c copy              input.mkv
+# MP4 — three paths, chosen by the source video stream:
+#  yuvj420p (HDZero DVR):    re-encode video to yuv420p, copy audio
+#  HEVC:                     remux, tag video as hvc1
+#  anything else (H.264 etc): remux as-is
 ```
 
-`-c copy` tells `ffmpeg` to pass the existing video and audio streams through untouched — no decode/encode round-trip — so the result is identical in quality to the source and finishes nearly as fast as a file copy.
+The MP4 script probes the source video codec and pixel format with `ffprobe` to pick the right ffmpeg flags:
 
-The MP4 script probes the source video codec with `ffprobe`. If it's HEVC it adds `-tag:v hvc1` so Apple's frameworks recognize the stream — without that tag, HEVC-in-MP4 plays audio only in QuickTime / Finder preview / iMovie. For H.264 (e.g. HDZero DVR) no tag is needed, and applying `hvc1` to H.264 would make the mux fail. `-map "0:a?"` makes the audio track optional, since some sources — including HDZero — have no audio.
+| Source | MP4 strategy | Why |
+|---|---|---|
+| H.264 `yuvj420p` (HDZero) | `-c:v libx264 -pix_fmt yuv420p -color_range tv -c:a copy` | Apple's AVFoundation refuses to render the deprecated full-range JPEG-style YUV pixel format; on a pure remux QuickTime shows black video. The re-encode swaps the pixel format to standard `yuv420p` so playback works in QuickTime / iMovie / Finder preview. CRF 18 is visually transparent. |
+| HEVC | `-c copy -tag:v hvc1` | Apple needs the `hvc1` codec tag (instead of `hev1`) to recognize HEVC in MP4 — without it, the video stream is muxed but plays audio only. |
+| Anything else | `-c copy` | Pure remux, lossless, finishes nearly as fast as a file copy. |
+
+`-map "0:a?"` makes the audio track optional, since some sources (including HDZero) have no audio. The quotes matter — zsh would otherwise glob the `?`.
 
 If a `.ts` file contains streams MP4 can't carry (e.g. some flavors of MPEG-2, AC-3 audio), the MP4 mux will fail and you'll get a "failed" notification — try the MKV action instead.
 
@@ -97,16 +107,20 @@ Or just delete `~/Library/Services/Convert TS to MP4.workflow` and `~/Library/Se
    for f in "$@"; do
      case "$f" in
        *.ts|*.TS)
-         tag=()
-         [ "$(ffprobe -v error -select_streams v:0 -show_entries stream=codec_name -of default=nw=1:nk=1 "$f")" = "hevc" ] && tag=(-tag:v hvc1)
-         ffmpeg -y -i "$f" -map 0:v -map "0:a?" -c copy "${tag[@]}" "${f%.*}.mp4"
+         vcodec=$(ffprobe -v error -select_streams v:0 -show_entries stream=codec_name -of default=nw=1:nk=1 "$f")
+         vpix=$(ffprobe -v error -select_streams v:0 -show_entries stream=pix_fmt   -of default=nw=1:nk=1 "$f")
+         case "$vpix" in
+           yuvj*) vargs=(-c:v libx264 -crf 18 -preset veryfast -pix_fmt yuv420p -color_range tv) ;;
+           *)     if [ "$vcodec" = "hevc" ]; then vargs=(-c:v copy -tag:v hvc1); else vargs=(-c:v copy); fi ;;
+         esac
+         ffmpeg -y -i "$f" -map 0:v -map "0:a?" "${vargs[@]}" -c:a copy "${f%.*}.mp4"
          ;;
      esac
    done
    osascript -e 'display notification "Done" with title "Convert TS to MP4"'
    ```
 
-   For an MKV variant, drop the `tag` logic and change the output extension to `.mkv`.
+   For an MKV variant, replace all of the codec-selection logic with a single `ffmpeg -y -i "$f" -map 0:v -map "0:a?" -c copy "${f%.*}.mkv"` line and change the output extension to `.mkv`.
 
 6. **File** → **Save** → name it `Convert TS to MP4` (or `Convert TS to MKV`)
 
