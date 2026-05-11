@@ -266,7 +266,14 @@ for f in "$@"; do
   esac
 
   out="${f%.*}.mp4"
-  if /usr/bin/env ffmpeg -y -i "$f" -map 0:v -map 0:a? -c copy -tag:v hvc1 "$out" </dev/null >/dev/null 2>&1; then
+  # Only tag as hvc1 if the source video is HEVC. Applying -tag:v hvc1 to an
+  # H.264 stream (e.g. HDZero) makes ffmpeg refuse to write the mp4 header.
+  vcodec="$(/usr/bin/env ffprobe -v error -select_streams v:0 -show_entries stream=codec_name -of default=nw=1:nk=1 "$f" 2>/dev/null)"
+  tag_args=()
+  if [ "$vcodec" = "hevc" ]; then
+    tag_args=(-tag:v hvc1)
+  fi
+  if /usr/bin/env ffmpeg -y -i "$f" -map 0:v -map "0:a?" -c copy "${tag_args[@]}" "$out" </dev/null >/dev/null 2>&1; then
     count_ok=$((count_ok + 1))
   else
     count_fail=$((count_fail + 1))
@@ -309,7 +316,7 @@ for f in "$@"; do
   esac
 
   out="${f%.*}.mkv"
-  if /usr/bin/env ffmpeg -y -i "$f" -map 0:v -map 0:a? -c copy "$out" </dev/null >/dev/null 2>&1; then
+  if /usr/bin/env ffmpeg -y -i "$f" -map 0:v -map "0:a?" -c copy "$out" </dev/null >/dev/null 2>&1; then
     count_ok=$((count_ok + 1))
   else
     count_fail=$((count_fail + 1))
