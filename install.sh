@@ -240,14 +240,15 @@ PY
 
 # --- 3. Shell scripts for each Quick Action --------------------------------
 
-# MP4 variant. `-tag:v hvc1` makes HEVC streams (e.g. HDZero DVR) play in
-# QuickTime/Finder/iMovie — without it, the stream is muxed as `hev1` and
-# QuickTime renders audio only.
-read -r -d '' MP4_SCRIPT <<'SCRIPT' || true
+# MP4 template — parameterized by `__FPS__` (60 or 90). For yuvj* (HDZero-style)
+# sources we re-encode to standard yuv420p at the chosen fps so AVFoundation
+# will render the video; HEVC sources get a remux + `hvc1` tag so QuickTime
+# recognizes the codec; everything else is a pure remux.
+read -r -d '' MP4_TEMPLATE <<'SCRIPT' || true
 PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
 
 notify() {
-  /usr/bin/osascript -e "display notification \"$1\" with title \"Convert TS to MP4\""
+  /usr/bin/osascript -e "display notification \"$1\" with title \"Convert TS to MP4 (__FPS__ fps)\""
 }
 
 count_total=0
@@ -266,30 +267,20 @@ for f in "$@"; do
   esac
 
   out="${f%.*}.mp4"
-  # HDZero records H.264 with `yuvj420p` (deprecated JPEG-style full-range YUV).
-  # Apple's AVFoundation refuses to render that pixel format, so QuickTime /
-  # Finder preview / iMovie show black video on a pure remux. When we detect
-  # `yuvj*`, re-encode the video stream to standard `yuv420p` (audio stays a
-  # straight copy). For HEVC sources we just remux + tag as `hvc1`, which is
-  # what Apple needs to recognize the codec.
   vcodec="$(/usr/bin/env ffprobe -v error -select_streams v:0 -show_entries stream=codec_name -of default=nw=1:nk=1 "$f" 2>/dev/null)"
   vpixfmt="$(/usr/bin/env ffprobe -v error -select_streams v:0 -show_entries stream=pix_fmt -of default=nw=1:nk=1 "$f" 2>/dev/null)"
   iargs=()
   case "$vpixfmt" in
     yuvj*)
-      # Defensive re-encode for HDZero-style sources:
-      #   - Drop to 60 fps. The 90 fps source decodes too slowly in QuickTime
-      #     and plays back as slow motion mid-clip on a typical Mac. 60 fps is
-      #     the FPV-editing standard, half-again less decode work, and plays
-      #     smoothly in QuickTime / iMovie. (Same duration, one frame in three
-      #     dropped — visually indistinguishable.)
-      #   - Re-encode to yuv420p so AVFoundation actually renders the video
-      #     (it refuses to render yuvj420p, which is what HDZero records).
-      #   - `+genpts` regenerates timestamps in case the source has glitched
-      #     ones; `bf 0` and `g 60` keep the GOP structure simple so a single
-      #     corrupt source frame can't propagate further than 1 second.
+      # Defensive re-encode for HDZero-style sources. The 60 fps variant of
+      # this Quick Action lets QuickTime/iMovie play the result smoothly (90 fps
+      # H.264 at HDZero bitrates stutters into slo-mo on most Macs); the 90 fps
+      # variant preserves the source frame rate for IINA / VLC playback.
+      # `+genpts` regenerates timestamps in case the source has glitched ones;
+      # `bf 0` + `g __FPS__` keeps the GOP structure simple so a single corrupt
+      # source frame can't propagate further than 1 second.
       iargs=(-fflags +genpts)
-      vargs=(-filter:v "fps=60" -c:v libx264 -crf 18 -preset veryfast -pix_fmt yuv420p -color_range tv -bf 0 -g 60 -fps_mode cfr)
+      vargs=(-filter:v "fps=__FPS__" -c:v libx264 -crf 18 -preset veryfast -pix_fmt yuv420p -color_range tv -bf 0 -g __FPS__ -fps_mode cfr)
       ;;
     *)
       if [ "$vcodec" = "hevc" ]; then
@@ -316,6 +307,9 @@ elif [ "$count_skip" -eq "$count_total" ]; then
   notify "No .ts files in selection"
 fi
 SCRIPT
+
+MP4_60_SCRIPT="${MP4_TEMPLATE//__FPS__/60}"
+MP4_90_SCRIPT="${MP4_TEMPLATE//__FPS__/90}"
 
 # MKV variant. Matroska accepts any codec, so the remux works on any .ts
 # source without codec tagging. Plays in VLC / IINA (not native QuickTime).
@@ -360,10 +354,19 @@ elif [ "$count_skip" -eq "$count_total" ]; then
 fi
 SCRIPT
 
-# --- 4. Build both bundles -------------------------------------------------
+# --- 4. Build all three bundles --------------------------------------------
 
-build_workflow "Convert TS to MP4" "$MP4_SCRIPT"
-build_workflow "Convert TS to MKV" "$MKV_SCRIPT"
+build_workflow "Convert TS to MP4 (60 fps)" "$MP4_60_SCRIPT"
+build_workflow "Convert TS to MP4 (90 fps)" "$MP4_90_SCRIPT"
+build_workflow "Convert TS to MKV"          "$MKV_SCRIPT"
+
+# Old single-MP4 install from before the 60/90 split — clean it up so the menu
+# doesn't show a stale entry.
+LEGACY_DIR="${SERVICES_DIR}/Convert TS to MP4.workflow"
+if [[ -d "$LEGACY_DIR" ]]; then
+  print_step "Removing legacy ${LEGACY_DIR##*/}"
+  rm -rf "$LEGACY_DIR"
+fi
 
 # --- 5. Refresh the Services menu -----------------------------------------
 
@@ -371,5 +374,5 @@ print_step "Refreshing Finder services"
 /System/Library/CoreServices/pbs -flush >/dev/null 2>&1 || true
 /System/Library/CoreServices/pbs -update >/dev/null 2>&1 || true
 
-print_ok "Done. Right-click a .ts file in Finder → Quick Actions → Convert TS to MP4 / MKV"
+print_ok "Done. Right-click a .ts file in Finder → Quick Actions → Convert TS to MP4 (60/90 fps) or MKV"
 print_warn "If the menu items don't appear immediately, log out and back in (or just relaunch Finder: \`killall Finder\`)."

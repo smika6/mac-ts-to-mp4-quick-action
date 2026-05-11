@@ -1,10 +1,15 @@
 #!/bin/zsh
-# Uninstaller for the "Convert TS to MP4" and "Convert TS to MKV" Quick Actions.
+# Uninstaller for the Convert TS Quick Actions.
 
 set -euo pipefail
 
 SERVICES_DIR="${HOME}/Library/Services"
-SERVICE_NAMES=("Convert TS to MP4" "Convert TS to MKV")
+SERVICE_NAMES=(
+  "Convert TS to MP4 (60 fps)"
+  "Convert TS to MP4 (90 fps)"
+  "Convert TS to MKV"
+  "Convert TS to MP4"  # legacy name from before the 60/90 split
+)
 
 removed_any=0
 for name in "${SERVICE_NAMES[@]}"; do
