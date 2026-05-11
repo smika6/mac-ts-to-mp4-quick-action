@@ -277,12 +277,19 @@ for f in "$@"; do
   iargs=()
   case "$vpixfmt" in
     yuvj*)
-      # Defensive re-encode: regenerate PTS in case the source has glitched
-      # timestamps (HDZero clips have an occasional corrupted P-frame mid-
-      # stream), force CFR, disable B-frames, and force a 1-second keyframe
-      # interval so playback after the bad frame stays sync'd in QuickTime.
+      # Defensive re-encode for HDZero-style sources:
+      #   - Drop to 60 fps. The 90 fps source decodes too slowly in QuickTime
+      #     and plays back as slow motion mid-clip on a typical Mac. 60 fps is
+      #     the FPV-editing standard, half-again less decode work, and plays
+      #     smoothly in QuickTime / iMovie. (Same duration, one frame in three
+      #     dropped — visually indistinguishable.)
+      #   - Re-encode to yuv420p so AVFoundation actually renders the video
+      #     (it refuses to render yuvj420p, which is what HDZero records).
+      #   - `+genpts` regenerates timestamps in case the source has glitched
+      #     ones; `bf 0` and `g 60` keep the GOP structure simple so a single
+      #     corrupt source frame can't propagate further than 1 second.
       iargs=(-fflags +genpts)
-      vargs=(-c:v libx264 -crf 18 -preset veryfast -pix_fmt yuv420p -color_range tv -bf 0 -g 90 -fps_mode cfr)
+      vargs=(-filter:v "fps=60" -c:v libx264 -crf 18 -preset veryfast -pix_fmt yuv420p -color_range tv -bf 0 -g 60 -fps_mode cfr)
       ;;
     *)
       if [ "$vcodec" = "hevc" ]; then

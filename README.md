@@ -75,7 +75,7 @@ The MP4 script probes the source video codec and pixel format with `ffprobe` to 
 
 | Source | MP4 strategy | Why |
 |---|---|---|
-| H.264 `yuvj420p` (HDZero) | `-c:v libx264 -pix_fmt yuv420p -color_range tv -c:a copy` | Apple's AVFoundation refuses to render the deprecated full-range JPEG-style YUV pixel format; on a pure remux QuickTime shows black video. The re-encode swaps the pixel format to standard `yuv420p` so playback works in QuickTime / iMovie / Finder preview. CRF 18 is visually transparent. |
+| H.264 `yuvj420p` (HDZero) | `-filter:v fps=60 -c:v libx264 -pix_fmt yuv420p -color_range tv -c:a copy` | Two fixes in one re-encode: (1) swap the pixel format to standard `yuv420p` — Apple's AVFoundation refuses to render the deprecated full-range JPEG-style YUV and shows black video otherwise; (2) drop from HDZero's native 90 fps to 60 fps, the FPV-editing standard. QuickTime/iMovie can't keep up with 90 fps H.264 at HDZero bitrates and stutters into slow motion during fast scenes. CRF 18 is visually transparent. |
 | HEVC | `-c copy -tag:v hvc1` | Apple needs the `hvc1` codec tag (instead of `hev1`) to recognize HEVC in MP4 — without it, the video stream is muxed but plays audio only. |
 | Anything else | `-c copy` | Pure remux, lossless, finishes nearly as fast as a file copy. |
 
@@ -110,7 +110,7 @@ Or just delete `~/Library/Services/Convert TS to MP4.workflow` and `~/Library/Se
          vcodec=$(ffprobe -v error -select_streams v:0 -show_entries stream=codec_name -of default=nw=1:nk=1 "$f")
          vpix=$(ffprobe -v error -select_streams v:0 -show_entries stream=pix_fmt   -of default=nw=1:nk=1 "$f")
          case "$vpix" in
-           yuvj*) vargs=(-c:v libx264 -crf 18 -preset veryfast -pix_fmt yuv420p -color_range tv) ;;
+           yuvj*) vargs=(-filter:v "fps=60" -c:v libx264 -crf 18 -preset veryfast -pix_fmt yuv420p -color_range tv) ;;
            *)     if [ "$vcodec" = "hevc" ]; then vargs=(-c:v copy -tag:v hvc1); else vargs=(-c:v copy); fi ;;
          esac
          ffmpeg -y -i "$f" -map 0:v -map "0:a?" "${vargs[@]}" -c:a copy "${f%.*}.mp4"
