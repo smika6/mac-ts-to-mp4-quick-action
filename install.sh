@@ -274,9 +274,15 @@ for f in "$@"; do
   # what Apple needs to recognize the codec.
   vcodec="$(/usr/bin/env ffprobe -v error -select_streams v:0 -show_entries stream=codec_name -of default=nw=1:nk=1 "$f" 2>/dev/null)"
   vpixfmt="$(/usr/bin/env ffprobe -v error -select_streams v:0 -show_entries stream=pix_fmt -of default=nw=1:nk=1 "$f" 2>/dev/null)"
+  iargs=()
   case "$vpixfmt" in
     yuvj*)
-      vargs=(-c:v libx264 -crf 18 -preset veryfast -pix_fmt yuv420p -color_range tv)
+      # Defensive re-encode: regenerate PTS in case the source has glitched
+      # timestamps (HDZero clips have an occasional corrupted P-frame mid-
+      # stream), force CFR, disable B-frames, and force a 1-second keyframe
+      # interval so playback after the bad frame stays sync'd in QuickTime.
+      iargs=(-fflags +genpts)
+      vargs=(-c:v libx264 -crf 18 -preset veryfast -pix_fmt yuv420p -color_range tv -bf 0 -g 90 -fps_mode cfr)
       ;;
     *)
       if [ "$vcodec" = "hevc" ]; then
@@ -286,7 +292,7 @@ for f in "$@"; do
       fi
       ;;
   esac
-  if /usr/bin/env ffmpeg -y -i "$f" -map 0:v -map "0:a?" "${vargs[@]}" -c:a copy "$out" </dev/null >/dev/null 2>&1; then
+  if /usr/bin/env ffmpeg -y "${iargs[@]}" -i "$f" -map 0:v -map "0:a?" "${vargs[@]}" -c:a copy "$out" </dev/null >/dev/null 2>&1; then
     count_ok=$((count_ok + 1))
   else
     count_fail=$((count_fail + 1))
